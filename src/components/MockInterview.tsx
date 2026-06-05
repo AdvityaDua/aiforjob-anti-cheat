@@ -11,6 +11,7 @@ import { ProctorDashboard } from './ProctorDashboard';
 interface MockInterviewProps {
   mediaStream: MediaStream;
   referenceDescriptor: Float32Array;
+  goldenBaselineMFCC: number[] | null;
   onEndInterview: () => void;
 }
 
@@ -30,6 +31,7 @@ const MOCK_QUESTIONS = [
 export function MockInterview({
   mediaStream,
   referenceDescriptor,
+  goldenBaselineMFCC,
   onEndInterview,
 }: MockInterviewProps) {
   const [currentQuestion, setCurrentQuestion] = useState(0);
@@ -144,6 +146,7 @@ export function MockInterview({
   } = useAudioMonitor({
     onEvent: addEvent,
     enabled: isActive,
+    goldenBaselineMFCC,
   });
 
   // Start audio monitoring on mount

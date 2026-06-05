@@ -12,6 +12,8 @@ export type ViolationEventType =
   | 'mic_disconnected'
   | 'identity_verified'
   | 'gaze_warning'
+  | 'speech_detected'
+  | 'voice_mismatch'
   | 'info';
 
 export interface IntegrityEvent {
@@ -30,6 +32,7 @@ const PENALTY_MAP: Partial<Record<ViolationEventType, number>> = {
   face_missing: -10,
   looking_away: -5,
   volume_spike: -2,
+  voice_mismatch: -50,
 };
 
 let eventIdCounter = 0;

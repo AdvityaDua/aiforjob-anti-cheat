@@ -9,6 +9,7 @@ function App() {
   const [phase, setPhase] = useState<AppPhase>('enrollment');
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
   const [referenceDescriptor, setReferenceDescriptor] = useState<Float32Array | null>(null);
+  const [goldenBaselineMFCC, setGoldenBaselineMFCC] = useState<number[] | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   // Start camera once at the app level so the stream persists across phases
@@ -17,7 +18,7 @@ function App() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 480, facingMode: 'user' },
-          audio: false,
+          audio: true, // Need audio for both enrollment and monitoring
         });
         streamRef.current = stream;
         setMediaStream(stream);
@@ -36,8 +37,9 @@ function App() {
   }, []);
 
   const handleEnrollmentComplete = useCallback(
-    (descriptor: Float32Array) => {
+    (descriptor: Float32Array, mfccBaseline: number[] | null) => {
       setReferenceDescriptor(descriptor);
+      setGoldenBaselineMFCC(mfccBaseline);
       setPhase('interview');
     },
     []
@@ -46,6 +48,7 @@ function App() {
   const handleEndInterview = useCallback(() => {
     setPhase('enrollment');
     setReferenceDescriptor(null);
+    setGoldenBaselineMFCC(null);
   }, []);
 
   return (
@@ -67,6 +70,7 @@ function App() {
           <MockInterview
             mediaStream={mediaStream}
             referenceDescriptor={referenceDescriptor}
+            goldenBaselineMFCC={goldenBaselineMFCC}
             onEndInterview={handleEndInterview}
           />
         )}

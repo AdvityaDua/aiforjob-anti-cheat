@@ -1,20 +1,27 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
+import Meyda from 'meyda';
 import { useFaceEnrollment } from '../hooks/useFaceEnrollment';
 
 interface EnrollmentFlowProps {
   mediaStream: MediaStream | null;
-  onEnrollmentComplete: (referenceDescriptor: Float32Array) => void;
+  onEnrollmentComplete: (referenceDescriptor: Float32Array, goldenBaselineMFCC: number[]) => void;
 }
 
 export function EnrollmentFlow({ mediaStream, onEnrollmentComplete }: EnrollmentFlowProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [cameraReady, setCameraReady] = useState(false);
 
+  // Voice Enrollment State
+  const [isVoiceEnrolled, setIsVoiceEnrolled] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<'idle' | 'recording'>('idle');
+  const [voiceProgress, setVoiceProgress] = useState(0);
+  const goldenBaselineMFCCRef = useRef<number[] | null>(null);
+
   const {
     enrollmentState,
     enroll,
     getReferenceDescriptor,
-    isEnrolled,
+    isEnrolled: isFaceEnrolled,
   } = useFaceEnrollment();
 
   // Attach the shared stream to our local video element
@@ -25,10 +32,71 @@ export function EnrollmentFlow({ mediaStream, onEnrollmentComplete }: Enrollment
     }
   }, [mediaStream]);
 
-  const handleEnroll = useCallback(async () => {
+  const handleFaceEnroll = useCallback(async () => {
     if (!videoRef.current) return;
     await enroll(videoRef.current);
   }, [enroll]);
+
+  const handleVoiceEnroll = useCallback(() => {
+    if (!mediaStream) return;
+    
+    setVoiceStatus('recording');
+    setVoiceProgress(0);
+
+    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(mediaStream);
+    
+    let collectedMFCCs: number[][] = [];
+    
+    const analyzer = Meyda.createMeydaAnalyzer({
+      audioContext: audioCtx,
+      source: source,
+      bufferSize: 512,
+      featureExtractors: ["mfcc"],
+      callback: (features: any) => {
+        if (!features || !features.mfcc) return;
+        
+        const volume = features.mfcc.reduce((a: number, b: number) => Math.abs(a) + Math.abs(b), 0);
+        if (volume > 40) {
+          collectedMFCCs.push([...features.mfcc]);
+        }
+      }
+    });
+    
+    analyzer.start();
+    
+    // Record for exactly 4 seconds
+    const interval = setInterval(() => {
+      setVoiceProgress((p) => p + 10);
+    }, 400);
+
+    setTimeout(() => {
+      analyzer.stop();
+      audioCtx.close();
+      clearInterval(interval);
+      
+      if (collectedMFCCs.length > 5) {
+        // Average the MFCC frames to create the Golden Baseline
+        const mfccLength = collectedMFCCs[0].length;
+        const avgMFCC = new Array(mfccLength).fill(0);
+        
+        for (let i = 0; i < collectedMFCCs.length; i++) {
+          for (let j = 0; j < mfccLength; j++) {
+            avgMFCC[j] += collectedMFCCs[i][j];
+          }
+        }
+        for (let j = 0; j < mfccLength; j++) {
+          avgMFCC[j] /= collectedMFCCs.length;
+        }
+        
+        goldenBaselineMFCCRef.current = avgMFCC;
+        setIsVoiceEnrolled(true);
+      } else {
+        alert("Voice not detected clearly. Please try again and speak louder.");
+      }
+      setVoiceStatus('idle');
+    }, 4000);
+  }, [mediaStream]);
 
   const handleStartInterview = useCallback(async () => {
     try {
@@ -37,22 +105,19 @@ export function EnrollmentFlow({ mediaStream, onEnrollmentComplete }: Enrollment
       console.warn('Could not auto-enter fullscreen:', err);
     }
     const descriptor = getReferenceDescriptor();
-    if (descriptor) {
-      onEnrollmentComplete(descriptor);
+    if (descriptor && goldenBaselineMFCCRef.current) {
+      onEnrollmentComplete(descriptor, goldenBaselineMFCCRef.current);
     }
   }, [getReferenceDescriptor, onEnrollmentComplete]);
 
-  const progressPercent =
-    (enrollmentState.progress / 5) * 100;
+  const progressPercent = (enrollmentState.progress / 5) * 100;
 
   return (
     <div className="enrollment-container">
       <div className="enrollment-card">
-        <h2>🛡️ Face Enrollment</h2>
+        <h2>🛡️ Identity Enrollment</h2>
         <p>
-          Before starting the interview, we need to verify your identity.
-          <br />
-          Please look directly at the camera and ensure good lighting.
+          Before starting the interview, we need to verify your face and voice.
         </p>
 
         {!mediaStream ? (
@@ -67,13 +132,13 @@ export function EnrollmentFlow({ mediaStream, onEnrollmentComplete }: Enrollment
               marginBottom: 16,
             }}
           >
-            Camera access denied. Please allow camera access and refresh.
+            Camera and Microphone access denied. Please allow access and refresh.
           </div>
         ) : (
           <>
             <div
               className={`webcam-preview ${
-                isEnrolled ? 'active' : ''
+                isFaceEnrolled && isVoiceEnrolled ? 'active' : ''
               }`}
             >
               <video
@@ -82,20 +147,21 @@ export function EnrollmentFlow({ mediaStream, onEnrollmentComplete }: Enrollment
                 playsInline
                 muted
               />
-              {isEnrolled && (
+              {isFaceEnrolled && isVoiceEnrolled && (
                 <div className="webcam-overlay">
-                  <span className="webcam-badge green">✓ Enrolled</span>
+                  <span className="webcam-badge green">✓ Fully Enrolled</span>
                 </div>
               )}
               {enrollmentState.status === 'capturing' && (
                 <div className="webcam-overlay">
                   <span className="webcam-badge blue">
-                    📸 Capturing {enrollmentState.progress}/5
+                    📸 Capturing Face {enrollmentState.progress}/5
                   </span>
                 </div>
               )}
             </div>
 
+            {/* Face Enrollment Progress */}
             {enrollmentState.status === 'capturing' && (
               <div className="progress-container">
                 <div className="progress-label">
@@ -111,10 +177,25 @@ export function EnrollmentFlow({ mediaStream, onEnrollmentComplete }: Enrollment
               </div>
             )}
 
+            {/* Voice Enrollment Progress */}
+            {voiceStatus === 'recording' && (
+              <div className="progress-container">
+                <div className="progress-label">
+                  <span style={{ color: 'var(--accent-blue)', fontWeight: 600 }}>🎤 Please read: "I am ready to begin my interview."</span>
+                </div>
+                <div className="progress-bar">
+                  <div
+                    className="progress-fill"
+                    style={{ width: `${voiceProgress}%`, background: 'var(--accent-blue)' }}
+                  />
+                </div>
+              </div>
+            )}
+
             {enrollmentState.status === 'loading_models' && (
               <div className="loading-indicator" style={{ justifyContent: 'center', marginBottom: 16 }}>
                 <div className="spinner" />
-                <span>Loading face detection models...</span>
+                <span>Loading detection models...</span>
               </div>
             )}
 
@@ -137,10 +218,10 @@ export function EnrollmentFlow({ mediaStream, onEnrollmentComplete }: Enrollment
         )}
 
         <div style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 16 }}>
-          {!isEnrolled ? (
+          {!isFaceEnrolled ? (
             <button
               className="btn btn-primary"
-              onClick={handleEnroll}
+              onClick={handleFaceEnroll}
               disabled={
                 !cameraReady ||
                 enrollmentState.status === 'capturing' ||
@@ -148,10 +229,20 @@ export function EnrollmentFlow({ mediaStream, onEnrollmentComplete }: Enrollment
               }
             >
               {enrollmentState.status === 'capturing'
-                ? `Capturing (${enrollmentState.progress}/5)...`
+                ? `Capturing Face (${enrollmentState.progress}/5)...`
                 : enrollmentState.status === 'loading_models'
                   ? 'Loading Models...'
-                  : '📸 Start Enrollment'}
+                  : '📸 1. Start Face Enrollment'}
+            </button>
+          ) : !isVoiceEnrolled ? (
+            <button
+              className="btn btn-primary"
+              onClick={handleVoiceEnroll}
+              disabled={voiceStatus === 'recording'}
+            >
+              {voiceStatus === 'recording'
+                ? '🎙️ Recording Voice...'
+                : '🎙️ 2. Start Voice Enrollment'}
             </button>
           ) : (
             <button
@@ -163,14 +254,14 @@ export function EnrollmentFlow({ mediaStream, onEnrollmentComplete }: Enrollment
           )}
         </div>
 
-        {isEnrolled && (
-          <p style={{ marginTop: 16, color: 'var(--accent-green)', fontSize: 13 }}>
-            ✅ Face enrolled successfully! Click "Start Interview" to begin.
+        {isFaceEnrolled && isVoiceEnrolled && (
+          <p style={{ marginTop: 16, color: 'var(--accent-green)', fontSize: 13, textAlign: 'center' }}>
+            ✅ Face and Voice enrolled successfully! Click "Start Interview" to begin.
           </p>
         )}
 
         <div style={{ marginTop: 24, fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-          <strong>How it works:</strong> We capture 5 images of your face to create
+          <strong>How it works:</strong> We capture images of your face and a sample of your voice to create
           a unique identity reference. During the interview, we continuously verify
           that the same person is present.
         </div>
